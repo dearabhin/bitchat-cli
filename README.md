@@ -3,7 +3,7 @@
 This is a Python-based, command-line implementation of **bitchat**, a secure, decentralized, peer-to-peer messaging app that works over Bluetooth mesh networks. This version is designed to be compatible with the original Swift application's protocol.
 
 
-[![Original Repo](https://img.shields.io/badge/Original%20Repo-Click%20Here-blue?style=for-the-badge&logo=github)](https://github.com/jackjackbits/bitchat)
+[![Original iOS Version by Jack](https://img.shields.io/badge/Original%20Repo-Click%20Here-blue?style=for-the-badge&logo=github)](https://github.com/jackjackbits/bitchat)
 
 
 ## Features
