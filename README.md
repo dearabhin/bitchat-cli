@@ -40,9 +40,10 @@ The application will automatically start scanning for nearby bitchat peers.
 ### Commands
 
 -   `/w`: List all currently connected users.
+-   `/help`: Show the list of available commands.
 -   `/m <nickname> <message>`: (Coming Soon) Send a private message.
 -   `/j #channel`: (Coming Soon) Join a channel.
--   `/clear`: (Coming Soon) Clear the screen.
+-   `/clear`: Clear the screen.
 
 ## How It Works
 
