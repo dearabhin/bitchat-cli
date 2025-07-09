@@ -45,3 +45,17 @@ The application will automatically start scanning for nearby bitchat peers.
 ## How It Works
 
 This application uses the `bleak` library to handle Bluetooth Low Energy (BLE) communication, acting as a BLE central device to discover and connect to other bitchat peers. It re-implements the custom binary protocol and encryption schemes from the original Swift application to ensure compatibility.
+
+# Contributing to bitchat-cli
+
+We welcome contributions from everyone! Here’s how you can help.
+
+## Getting Started
+1. Fork the repository.
+2. Clone your fork: `git clone https://github.com/dearabhin/bitchat-cli.git`
+3. Install the dependencies: `pip install -r requirements.txt`
+
+## Submitting Changes
+- Create a new branch for your feature or fix.
+- Write a clear commit message.
+- Open a Pull Request with a detailed description of your changes.
