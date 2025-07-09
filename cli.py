@@ -13,6 +13,7 @@ class CLI:
 
     def __init__(self, state: ChatState):
         self.state = state
+        # Pass the redraw callback to the service
         self.ble_service = BLEService(state, self.redraw_prompt)
         self.session = PromptSession(
             completer=WordCompleter([
@@ -39,7 +40,8 @@ class CLI:
 
     def redraw_prompt(self):
         """Redraws the input prompt, essential for a smooth UI."""
-        self.session.app.invalidate()
+        if self.session.app:
+            self.session.app.invalidate()
 
     def get_prompt_message(self):
         """Generates the prompt string with the user's nickname."""
@@ -51,52 +53,51 @@ class CLI:
         cmd = parts[0].lower()
 
         if cmd == "/w":
-            self.state.add_system_message("Connected Peers:")
+            print("[SYSTEM] Connected Peers:")
             if not self.state.connected_peers:
-                self.state.add_system_message("  (None) - Still scanning...")
+                print("  (None) - Still scanning...")
             else:
                 for peer in self.state.connected_peers:
                     nick = self.state.peer_nicknames.get(peer, "unknown")
-                    self.state.add_system_message(f"  - {nick} ({peer})")
+                    print(f"  - {nick} ({peer})")
         elif cmd == "/m":
-            self.state.add_system_message("Private messaging is coming soon!")
+            print("[SYSTEM] Private messaging is coming soon!")
         elif cmd == "/j":
-            self.state.add_system_message("Channels are coming soon!")
+            print("[SYSTEM] Channels are coming soon!")
         elif cmd == "/clear":
             # This is a simple way to clear the screen
             print("\033c", end="")
         elif cmd == "/help":
-            self.state.add_system_message("Available Commands:")
-            self.state.add_system_message(
-                "  /w          - List connected users.")
-            self.state.add_system_message(
-                "  /m <nick>   - (Coming Soon) Send a private message.")
-            self.state.add_system_message(
-                "  /j #channel - (Coming Soon) Join a channel.")
-            self.state.add_system_message("  /clear      - Clear the screen.")
+            print("[SYSTEM] Available Commands:")
+            print("  /w          - List connected users.")
+            print("  /m <nick>   - (Coming Soon) Send a private message.")
+            print("  /j #channel - (Coming Soon) Join a channel.")
+            print("  /clear      - Clear the screen.")
+            print("  /help       - Show this help message.")
         else:
-            self.state.add_system_message(
-                f"Unknown command: {cmd}. Type /help for a list of commands.")
+            print(
+                f"[SYSTEM] Unknown command: {cmd}. Type /help for a list of commands.")
 
     async def run(self):
         """Main loop for the CLI."""
         self.print_logo()
-        self.state.add_system_message("Welcome to Bitchat CLI!")
-        self.state.add_system_message(
-            "I'm now scanning for other peers over Bluetooth...")
-        self.state.add_system_message(
-            "Type a message and press Enter to broadcast.")
-        self.state.add_system_message("Type /help for a list of commands.")
+        print(
+            f"[SYSTEM] Welcome to Bitchat CLI! Your nickname is {self.state.nickname}.")
+        print("[SYSTEM] All messages are broadcast publicly to connected peers.")
+        print("[SYSTEM] I'm now scanning for other peers over Bluetooth...")
+        print(
+            "[SYSTEM] Type a message and press Enter to broadcast, or /help for commands.")
 
-        with patch_stdout():
-            scan_task = asyncio.create_task(
-                self.ble_service.scan_and_connect())
-            while True:
-                try:
-                    self.session.message = self.get_prompt_message()
+        scan_task = None
+        try:
+            with patch_stdout():
+                scan_task = asyncio.create_task(
+                    self.ble_service.scan_and_connect())
+                while True:
+                    self.session.message = self.get_prompt_message
                     input_text = await self.session.prompt_async()
 
-                    if not input_text:
+                    if not input_text.strip():
                         continue
 
                     if input_text.startswith("/"):
@@ -104,10 +105,24 @@ class CLI:
                     else:
                         message = BitchatMessage(
                             content=input_text, sender=self.state.nickname)
-                        self.state.add_message(message, is_own_message=True)
+                        # Add to local state
+                        self.state.add_message(message)
+                        # Print your own message immediately
+                        print(f"\n<You>: {message.content}")
+                        # Broadcast to peers
                         await self.ble_service.broadcast(message)
 
-                except (EOFError, KeyboardInterrupt):
-                    scan_task.cancel()
-                    break
-        print("Shutting down...")
+        except (EOFError, KeyboardInterrupt):
+            print("\n[SYSTEM] Shutting down...")
+            if scan_task:
+                scan_task.cancel()
+
+            print("[SYSTEM] Disconnecting from peers...")
+            disconnect_tasks = [
+                client.disconnect() for client in self.ble_service.clients.values() if client.is_connected
+            ]
+            if disconnect_tasks:
+                await asyncio.gather(*disconnect_tasks, return_exceptions=True)
+            print("[SYSTEM] All peers disconnected.")
+
+        print("[SYSTEM] Shutdown complete.")

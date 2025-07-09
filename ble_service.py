@@ -31,12 +31,14 @@ class BLEService:
             message = BitchatMessage.from_payload(packet.payload)
             if message:
                 self.state.add_message(message)
+                # Display the message and redraw the prompt
+                print(f"\n<{message.sender}>: {message.content}")
                 self.cli_redraw()
 
     async def scan_and_connect(self):
         """Continuously scans for and connects to bitchat peers."""
         scanner = BleakScanner(service_uuids=[SERVICE_UUID])
-        self.state.add_system_message("Scanner started...")
+        print("[SYSTEM] Scanner started...")
         while True:
             try:
                 devices = await scanner.discover(timeout=5.0)
@@ -45,73 +47,77 @@ class BLEService:
                         self.connecting_peers.add(device.address)
                         asyncio.create_task(self.connect_to_device(device))
             except BleakError as e:
-                self.state.add_system_message(
-                    f"[ERROR] Scan failed: {e}. Please check your Bluetooth adapter.")
+                print(
+                    f"[SYSTEM] [ERROR] Scan failed: {e}. Please check your Bluetooth adapter.")
             await asyncio.sleep(5)
 
     async def connect_to_device(self, device: BLEDevice):
         """Establishes and validates a connection with retries."""
         for attempt in range(MAX_CONNECT_ATTEMPTS):
             try:
-                self.state.add_system_message(
-                    f"Attempting to connect to {device.address} (Attempt {attempt + 1}/{MAX_CONNECT_ATTEMPTS})...")
+                print(
+                    f"[SYSTEM] Attempting to connect to {device.address} (Attempt {attempt + 1}/{MAX_CONNECT_ATTEMPTS})...")
+                self.cli_redraw()
 
+                client = BleakClient(
+                    device, disconnected_callback=self.on_disconnect)
                 async with asyncio.timeout(CONNECTION_TIMEOUT):
-                    client = BleakClient(
-                        device, disconnected_callback=self.on_disconnect)
                     await client.connect()
 
-                    if client.is_connected:
-                        # Validate the peer has the correct characteristic
-                        if any(char.uuid == CHARACTERISTIC_UUID for service in client.services for char in service.characteristics):
-                            self.state.add_system_message(
-                                f"Peer {device.address} validated. Connection successful.")
-                            self.clients[device.address] = client
-                            self.state.add_peer(
-                                device.address, device.name or "unknown")
-                            self.cli_redraw()
-                            await client.start_notify(CHARACTERISTIC_UUID, self.notification_handler)
-                            # This will block until disconnect
-                            await self.monitor_connection(client)
-                            return  # Exit successfully
-                        else:
-                            self.state.add_system_message(
-                                f"Device {device.address} is not a valid bitchat peer. Ignoring.")
-                            await client.disconnect()
-                            return  # Exit, no need to retry for invalid peers
-
+                if client.is_connected:
+                    # Validate the peer has the correct characteristic
+                    if any(char.uuid == CHARACTERISTIC_UUID for service in client.services for char in service.characteristics):
+                        peer_name = device.name or "unknown"
+                        print(
+                            f"[SYSTEM] Peer {peer_name} ({device.address}) validated. Connection successful.")
+                        self.clients[device.address] = client
+                        self.state.add_peer(device.address, peer_name)
+                        await client.start_notify(CHARACTERISTIC_UUID, self.notification_handler)
+                        self.cli_redraw()
+                        return  # Success, exit the retry loop and function
+                    else:
+                        print(
+                            f"[SYSTEM] Device {device.address} is not a valid bitchat peer. Ignoring.")
+                        await client.disconnect()
+                        # No need to retry for invalid peers
+                        return
             except asyncio.TimeoutError:
-                self.state.add_system_message(
-                    f"[WARN] Connection to {device.address} timed out.")
+                print(
+                    f"[SYSTEM] [WARN] Connection to {device.address} timed out.")
             except BleakError as e:
-                self.state.add_system_message(
-                    f"[WARN] Connection to {device.address} failed: {e}")
+                print(
+                    f"[SYSTEM] [WARN] Connection to {device.address} failed: {e}")
             except Exception as e:
-                self.state.add_system_message(
-                    f"[ERROR] An unexpected error occurred with {device.address}: {e}")
+                print(
+                    f"[SYSTEM] [ERROR] An unexpected error occurred with {device.address}: {e}")
                 break  # Don't retry on unexpected errors
+            finally:
+                # If we are not connected after an attempt, ensure the client is cleaned up
+                if not client.is_connected:
+                    # Bleak may not call on_disconnect for a failed connect attempt
+                    self.on_disconnect(client)
 
-            # If not the last attempt, wait before retrying
             if attempt < MAX_CONNECT_ATTEMPTS - 1:
                 await asyncio.sleep(RETRY_DELAY)
 
-        self.state.add_system_message(
-            f"Failed to connect to {device.address} after {MAX_CONNECT_ATTEMPTS} attempts.")
-        self.connecting_peers.discard(device.address)
+        print(
+            f"[SYSTEM] Failed to connect to {device.address} after {MAX_CONNECT_ATTEMPTS} attempts.")
+        self.cli_redraw()
 
     def on_disconnect(self, client: BleakClient):
         """Handles peer disconnection and cleans up resources."""
         address = client.address
+        # This callback can be triggered for devices we failed to connect to,
+        # so we check if they were ever truly 'connected'.
+        if address in self.state.connected_peers:
+            nickname = self.state.peer_nicknames.get(address, address)
+            self.state.remove_peer(address)
+            print(f"\n[SYSTEM] Peer '{nickname}' has disconnected.")
+            self.cli_redraw()
+
         if address in self.clients:
             del self.clients[address]
         self.connecting_peers.discard(address)
-        self.state.remove_peer(address)
-        self.cli_redraw()
-
-    async def monitor_connection(self, client: BleakClient):
-        """Waits until the client is disconnected."""
-        while client.is_connected:
-            await asyncio.sleep(1)
 
     async def broadcast(self, message: BitchatMessage):
         """Sends a message to all connected and validated peers."""
@@ -129,4 +135,9 @@ class BLEService:
             for client in self.clients.values() if client.is_connected
         ]
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    failed_client_addr = list(self.clients.keys())[i]
+                    print(
+                        f"[SYSTEM] [ERROR] Failed to send message to {failed_client_addr}: {result}")

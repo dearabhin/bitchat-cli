@@ -14,32 +14,18 @@ class ChatState:
         self.peer_nicknames: Dict[str, str] = {}
         self.current_channel: Optional[str] = None
 
-    def add_message(self, message: BitchatMessage, is_own_message: bool = False):
-        """Adds a message to the chat history and prints it."""
+    def add_message(self, message: BitchatMessage):
+        """Adds a message to the chat history."""
         self.messages.append(message)
-        # The CLI class now handles printing to prevent messy output.
-        # This logic is handled in the CLI run loop.
-        if is_own_message:
-            print(f"\n<You>: {message.content}")
-        else:
-            print(f"\n<{message.sender}>: {message.content}")
-
-    def add_system_message(self, content: str):
-        """Adds and prints a system message."""
-        # System messages are printed directly for immediate feedback.
-        print(f"[SYSTEM] {content}")
 
     def add_peer(self, peer_address: str, peer_nickname: str = "unknown"):
-        """Adds a peer and notifies the user."""
+        """Adds a peer to the state."""
         if peer_address not in self.connected_peers:
             self.connected_peers.add(peer_address)
             self.peer_nicknames[peer_address] = peer_nickname
-            self.add_system_message(
-                f"Peer '{peer_nickname}' ({peer_address}) has connected.")
 
     def remove_peer(self, peer_address: str):
-        """Removes a peer and notifies the user."""
+        """Removes a peer from the state."""
         if peer_address in self.connected_peers:
             self.connected_peers.remove(peer_address)
-            nickname = self.peer_nicknames.pop(peer_address, peer_address)
-            self.add_system_message(f"Peer '{nickname}' has disconnected.")
+            self.peer_nicknames.pop(peer_address, None)
