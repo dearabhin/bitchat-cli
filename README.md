@@ -1,4 +1,4 @@
-# Bitchat CLI (Windows/Python Version)
+# Bitchat CLI (Python Version)
 
 This is a Python-based, command-line implementation of **bitchat**, a secure, decentralized, peer-to-peer messaging app that works over Bluetooth mesh networks. This version is designed to be compatible with the original Swift application's protocol.
 
