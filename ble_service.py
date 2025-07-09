@@ -10,28 +10,28 @@ from protocol import BitchatPacket, BitchatMessage, BROADCAST_RECIPIENT
 # --- Constants ---
 SERVICE_UUID = "F47B5E2D-4A9E-4C5A-9B3F-8E1D2C3A4B5C"
 CHARACTERISTIC_UUID = "A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D"
-CONNECTION_TIMEOUT = 10.0  # seconds
+CONNECTION_TIMEOUT = 15.0  # Increased timeout for more reliability
+MAX_CONNECT_ATTEMPTS = 3   # Number of times to retry a connection
+RETRY_DELAY = 2            # Seconds to wait before retrying
 
 
 class BLEService:
-    """Manages BLE scanning, connections, and data transfer with improved stability."""
+    """Manages BLE scanning and connections with a robust, retry-based strategy."""
 
     def __init__(self, state: ChatState, cli_redraw_callback):
         self.state = state
         self.clients: Dict[str, BleakClient] = {}
-        self.connecting_peers: set = set()  # Keep track of connection attempts
+        self.connecting_peers: set = set()
         self.cli_redraw = cli_redraw_callback
 
     def notification_handler(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         """Handles incoming data packets from peers."""
         packet = BitchatPacket.unpack(bytes(data))
-        if packet:
+        if packet and packet.sender_id != self.state.my_peer_id:
             message = BitchatMessage.from_payload(packet.payload)
             if message:
-                # Make sure the sender is not ourselves
-                if packet.sender_id != self.state.my_peer_id:
-                    self.state.add_message(message)
-                    self.cli_redraw()
+                self.state.add_message(message)
+                self.cli_redraw()
 
     async def scan_and_connect(self):
         """Continuously scans for and connects to bitchat peers."""
@@ -41,7 +41,6 @@ class BLEService:
             try:
                 devices = await scanner.discover(timeout=5.0)
                 for device in devices:
-                    # Attempt to connect only if not already connected or attempting
                     if device.address not in self.clients and device.address not in self.connecting_peers:
                         self.connecting_peers.add(device.address)
                         asyncio.create_task(self.connect_to_device(device))
@@ -51,65 +50,61 @@ class BLEService:
             await asyncio.sleep(5)
 
     async def connect_to_device(self, device: BLEDevice):
-        """Establishes and validates a connection with a discovered device."""
+        """Establishes and validates a connection with retries."""
+        for attempt in range(MAX_CONNECT_ATTEMPTS):
+            try:
+                self.state.add_system_message(
+                    f"Attempting to connect to {device.address} (Attempt {attempt + 1}/{MAX_CONNECT_ATTEMPTS})...")
+
+                async with asyncio.timeout(CONNECTION_TIMEOUT):
+                    client = BleakClient(
+                        device, disconnected_callback=self.on_disconnect)
+                    await client.connect()
+
+                    if client.is_connected:
+                        # Validate the peer has the correct characteristic
+                        if any(char.uuid == CHARACTERISTIC_UUID for service in client.services for char in service.characteristics):
+                            self.state.add_system_message(
+                                f"Peer {device.address} validated. Connection successful.")
+                            self.clients[device.address] = client
+                            self.state.add_peer(
+                                device.address, device.name or "unknown")
+                            self.cli_redraw()
+                            await client.start_notify(CHARACTERISTIC_UUID, self.notification_handler)
+                            # This will block until disconnect
+                            await self.monitor_connection(client)
+                            return  # Exit successfully
+                        else:
+                            self.state.add_system_message(
+                                f"Device {device.address} is not a valid bitchat peer. Ignoring.")
+                            await client.disconnect()
+                            return  # Exit, no need to retry for invalid peers
+
+            except asyncio.TimeoutError:
+                self.state.add_system_message(
+                    f"[WARN] Connection to {device.address} timed out.")
+            except BleakError as e:
+                self.state.add_system_message(
+                    f"[WARN] Connection to {device.address} failed: {e}")
+            except Exception as e:
+                self.state.add_system_message(
+                    f"[ERROR] An unexpected error occurred with {device.address}: {e}")
+                break  # Don't retry on unexpected errors
+
+            # If not the last attempt, wait before retrying
+            if attempt < MAX_CONNECT_ATTEMPTS - 1:
+                await asyncio.sleep(RETRY_DELAY)
+
         self.state.add_system_message(
-            f"Found peer: {device.address}. Validating...")
-
-        client = BleakClient(device, disconnected_callback=self.on_disconnect)
-        try:
-            await asyncio.wait_for(client.connect(), timeout=CONNECTION_TIMEOUT)
-
-            if client.is_connected:
-                # IMPORTANT: Validate that this is a true bitchat peer
-                # by checking for the specific characteristic.
-                chat_char = None
-                for service in client.services:
-                    for char in service.characteristics:
-                        if char.uuid == CHARACTERISTIC_UUID:
-                            chat_char = char
-                            break
-                    if chat_char:
-                        break
-
-                if not chat_char:
-                    # This is not a valid bitchat peer, disconnect silently.
-                    self.state.add_system_message(
-                        f"Device {device.address} is not a valid bitchat peer. Ignoring.")
-                    await client.disconnect()
-                    return
-
-                # If validation passes, we have a real peer!
-                self.clients[device.address] = client
-                self.state.add_peer(device.address, device.name or "unknown")
-                self.cli_redraw()
-
-                await client.start_notify(chat_char, self.notification_handler)
-
-                # Keep the connection alive by waiting for a disconnect event.
-                await self.monitor_connection(client)
-
-        except asyncio.TimeoutError:
-            self.state.add_system_message(
-                f"[WARN] Connection attempt to {device.address} timed out.")
-        except BleakError as e:
-            # This will catch "Device not found" and other BLE-related issues
-            self.state.add_system_message(
-                f"[WARN] Failed to connect to {device.address}: {e}")
-        except Exception as e:
-            self.state.add_system_message(
-                f"[ERROR] Unexpected connection error with {device.address}: {e}")
-        finally:
-            # Ensure the peer is removed from the "connecting" set
-            self.connecting_peers.discard(device.address)
-            if client.is_connected and device.address not in self.clients:
-                await client.disconnect()
+            f"Failed to connect to {device.address} after {MAX_CONNECT_ATTEMPTS} attempts.")
+        self.connecting_peers.discard(device.address)
 
     def on_disconnect(self, client: BleakClient):
         """Handles peer disconnection and cleans up resources."""
         address = client.address
         if address in self.clients:
             del self.clients[address]
-
+        self.connecting_peers.discard(address)
         self.state.remove_peer(address)
         self.cli_redraw()
 
@@ -128,13 +123,10 @@ class BLEService:
         )
         data_to_send = packet.pack()
 
-        tasks = []
-        for client in self.clients.values():
-            if client.is_connected:
-                tasks.append(
-                    client.write_gatt_char(
-                        CHARACTERISTIC_UUID, data_to_send, response=False)
-                )
-
+        tasks = [
+            client.write_gatt_char(CHARACTERISTIC_UUID,
+                                   data_to_send, response=False)
+            for client in self.clients.values() if client.is_connected
+        ]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
