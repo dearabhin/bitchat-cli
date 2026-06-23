@@ -35,19 +35,30 @@ Run the application from your terminal:
 python main.py
 ```
 
-The application will automatically start scanning for nearby bitchat peers.
+The application will automatically start scanning for nearby bitchat peers and broadcast your public messages to them.
 
 ### Commands
 
--   `/w`: List all currently connected users.
--   `/help`: Show the list of available commands.
--   `/m <nickname> <message>`: (Coming Soon) Send a private message.
--   `/j #channel`: (Coming Soon) Join a channel.
+-   `/w`: List known peers (peer ID → nickname).
+-   `/name <nickname>`: Change your nickname and re-announce.
 -   `/clear`: Clear the screen.
+-   `/help`: Show the list of available commands.
+
+Any text that does not start with `/` is sent as a public (broadcast) message.
 
 ## How It Works
 
-This application uses the `bleak` library to handle Bluetooth Low Energy (BLE) communication, acting as a BLE central device to discover and connect to other bitchat peers. It re-implements the custom binary protocol and encryption schemes from the original Swift application to ensure compatibility.
+This application uses the `bleak` library for Bluetooth Low Energy (BLE) communication, acting as a BLE **central** that discovers, connects to, and exchanges packets with real bitchat peers in range. It implements bitchat's binary wire protocol — announce/leave/public-message packets, PKCS#7 padding, fragment reassembly, and Ed25519 packet signing — so it can take part in **public chat** with the official app.
+
+**Scope and limitations:** Only public/broadcast chat is supported. Private (Noise-encrypted) messaging, multi-hop mesh relaying, and advertising as a BLE peripheral are **not** implemented — `bleak` is central-only, so this client works one hop with peers it is connected to and is not itself discoverable when idle.
+
+### Protocol self-test
+
+You can verify the wire-protocol implementation without any Bluetooth hardware:
+
+```bash
+python selftest.py
+```
 
 # Contributing to bitchat-cli
 

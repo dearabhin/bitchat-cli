@@ -1,32 +1,29 @@
 # cli.py
 import asyncio
+
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.patch_stdout import patch_stdout
-from chat_state import ChatState
+
 from ble_service import BLEService
-from protocol import BitchatMessage
+from chat_state import ChatState
 
 
 class CLI:
-    """Manages the command-line interface and user input."""
+    """Command-line interface and input loop."""
 
     def __init__(self, state: ChatState):
         self.state = state
-        # Pass the redraw callback to the service
         self.ble_service = BLEService(state, self.redraw_prompt)
         self.session = PromptSession(
-            completer=WordCompleter([
-                "/w", "/m", "/j", "/clear", "/help"
-            ], ignore_case=True)
+            completer=WordCompleter(
+                ["/w", "/name", "/clear", "/help"], ignore_case=True
+            )
         )
 
     def print_logo(self):
-        """Prints the ASCII art logo."""
-        green_color = "\033[92m"
-        reset_color = "\033[0m"
-        logo = f"""
-{green_color}
+        green, reset = "\033[92m", "\033[0m"
+        print(f"""{green}
 ██████╗ ██╗████████╗ ██████╗██╗  ██╗ █████╗ ████████╗
 ██╔══██╗██║╚══██╔══╝██╔════╝██║  ██║██╔══██╗╚══██╔══╝
 ██████╔╝██║   ██║   ██║     ███████║███████║   ██║
@@ -34,95 +31,70 @@ class CLI:
 ██████╔╝██║   ██║   ╚██████╗██║  ██║██║  ██║   ██║
 ╚═════╝ ╚═╝   ╚═╝    ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
                     C L I
-{reset_color}
-        """
-        print(logo)
+{reset}""")
 
     def redraw_prompt(self):
-        """Redraws the input prompt, essential for a smooth UI."""
         if self.session.app:
             self.session.app.invalidate()
 
     def get_prompt_message(self):
-        """Generates the prompt string with the user's nickname."""
         return f"<{self.state.nickname}> "
 
     async def handle_command(self, text: str):
-        """Handles IRC-style commands."""
         parts = text.split(" ")
         cmd = parts[0].lower()
 
         if cmd == "/w":
-            print("[SYSTEM] Connected Peers:")
-            if not self.state.connected_peers:
-                print("  (None) - Still scanning...")
+            print("[SYSTEM] Known peers:")
+            if not self.state.peer_nicknames:
+                print("  (none yet) - still scanning / waiting for announces...")
             else:
-                for peer in self.state.connected_peers:
-                    nick = self.state.peer_nicknames.get(peer, "unknown")
-                    print(f"  - {nick} ({peer})")
-        elif cmd == "/m":
-            print("[SYSTEM] Private messaging is coming soon!")
-        elif cmd == "/j":
-            print("[SYSTEM] Channels are coming soon!")
+                for peer_id, nick in self.state.peer_nicknames.items():
+                    print(f"  - {nick} ({peer_id})")
+        elif cmd == "/name":
+            new_nick = text[len("/name"):].strip()
+            if not new_nick:
+                print("[SYSTEM] Usage: /name <new nickname>")
+            else:
+                self.state.nickname = new_nick
+                await self.ble_service.send_announce()
+                print(f"[SYSTEM] Nickname changed to '{new_nick}'.")
         elif cmd == "/clear":
-            # This is a simple way to clear the screen
             print("\033c", end="")
         elif cmd == "/help":
-            print("[SYSTEM] Available Commands:")
-            print("  /w          - List connected users.")
-            print("  /m <nick>   - (Coming Soon) Send a private message.")
-            print("  /j #channel - (Coming Soon) Join a channel.")
-            print("  /clear      - Clear the screen.")
-            print("  /help       - Show this help message.")
+            print("[SYSTEM] Available commands:")
+            print("  /w            - List known peers.")
+            print("  /name <nick>  - Change your nickname and re-announce.")
+            print("  /clear        - Clear the screen.")
+            print("  /help         - Show this help message.")
         else:
-            print(
-                f"[SYSTEM] Unknown command: {cmd}. Type /help for a list of commands.")
+            print(f"[SYSTEM] Unknown command: {cmd}. Type /help for commands.")
 
     async def run(self):
-        """Main loop for the CLI."""
         self.print_logo()
-        print(
-            f"[SYSTEM] Welcome to Bitchat CLI! Your nickname is {self.state.nickname}.")
-        print("[SYSTEM] All messages are broadcast publicly to connected peers.")
-        print("[SYSTEM] I'm now scanning for other peers over Bluetooth...")
-        print(
-            "[SYSTEM] Type a message and press Enter to broadcast, or /help for commands.")
+        print(f"[SYSTEM] Welcome to Bitchat CLI! Your nickname is {self.state.nickname}.")
+        print(f"[SYSTEM] Your peer ID is {self.state.my_peer_id_hex}.")
+        print("[SYSTEM] Messages are broadcast publicly to bitchat peers in range.")
+        print("[SYSTEM] Type a message and press Enter to send, or /help for commands.")
 
-        scan_task = None
+        ble_task = None
         try:
             with patch_stdout():
-                scan_task = asyncio.create_task(
-                    self.ble_service.scan_and_connect())
+                ble_task = asyncio.create_task(self.ble_service.run())
                 while True:
                     self.session.message = self.get_prompt_message
-                    input_text = await self.session.prompt_async()
-
-                    if not input_text.strip():
+                    text = await self.session.prompt_async()
+                    if not text.strip():
                         continue
-
-                    if input_text.startswith("/"):
-                        await self.handle_command(input_text)
+                    if text.startswith("/"):
+                        await self.handle_command(text)
                     else:
-                        message = BitchatMessage(
-                            content=input_text, sender=self.state.nickname)
-                        # Add to local state
-                        self.state.add_message(message)
-                        # Print your own message immediately
-                        print(f"\n<You>: {message.content}")
-                        # Broadcast to peers
-                        await self.ble_service.broadcast(message)
-
+                        await self.ble_service.send_public_message(text)
+                        print(f"<{self.state.nickname}>: {text}")
         except (EOFError, KeyboardInterrupt):
             print("\n[SYSTEM] Shutting down...")
-            if scan_task:
-                scan_task.cancel()
-
-            print("[SYSTEM] Disconnecting from peers...")
-            disconnect_tasks = [
-                client.disconnect() for client in self.ble_service.clients.values() if client.is_connected
-            ]
-            if disconnect_tasks:
-                await asyncio.gather(*disconnect_tasks, return_exceptions=True)
-            print("[SYSTEM] All peers disconnected.")
-
-        print("[SYSTEM] Shutdown complete.")
+        finally:
+            if ble_task:
+                ble_task.cancel()
+            await self.ble_service.stop()
+            print("[SYSTEM] Shutdown complete.")
