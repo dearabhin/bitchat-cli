@@ -1,8 +1,8 @@
 # chat_state.py
 from typing import Dict, List, Set
 
-from identity import IdentityKeys
-from protocol import BitchatMessage
+from .identity import IdentityKeys
+from .protocol import BitchatMessage
 
 
 class ChatState:

@@ -10,13 +10,15 @@ A Python CLI port of **bitchat**, a serverless peer-to-peer chat over a Bluetoot
 
 ## Commands
 
+The app lives in the `bitchat_cli/` package (installable; see `pyproject.toml`).
+
 ```bash
-pip install -r requirements.txt   # bleak, cryptography, prompt-toolkit
-python main.py                    # run the app; scans for bitchat peers over BLE
+pip install -e .                  # editable install of bleak, cryptography, prompt-toolkit
+bitchat-cli                       # (or `bitchat`, or `python -m bitchat_cli`) run the app; scans over BLE
 python selftest.py                # offline protocol round-trip + signature tests (no BLE needed)
 ```
 
-`selftest.py` is the only thing runnable without hardware. `main.py` requires a working Bluetooth LE adapter — without one it starts, prints the logo, and reports that the scan could not start. `selftest.py` needs only `cryptography` (not `bleak`/`prompt-toolkit`), so it runs in CI/headless.
+`selftest.py` is the only thing runnable without hardware; it imports the `bitchat_cli` package, so run it from the repo root. The app requires a working Bluetooth LE adapter — without one it starts, prints the logo, and reports that the scan could not start. `selftest.py` needs only `cryptography` (not `bleak`/`prompt-toolkit`), so it runs in CI/headless. Published to PyPI as `bitchat-cli`; version is single-sourced in `bitchat_cli/__init__.py`.
 
 In-app slash commands: `/w` (list known peers by peer-ID → nickname), `/name <nick>` (change nickname + re-announce), `/send <path>` (broadcast an image/voice note/file; alias `/file`), `/clear`, `/help`. Any non-slash input is broadcast publicly to connected peers.
 

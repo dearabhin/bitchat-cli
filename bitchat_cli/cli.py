@@ -5,8 +5,8 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.patch_stdout import patch_stdout
 
-from ble_service import BLEService
-from chat_state import ChatState
+from .ble_service import BLEService
+from .chat_state import ChatState
 
 
 class CLI:

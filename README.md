@@ -13,27 +13,31 @@ This is a Python-based, command-line implementation of **bitchat**, a secure, de
 
 ## Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/dearabhin/bitchat-cli.git
-    cd bitchat-cli
-    ```
+Requires Python 3.8+ and a working Bluetooth LE adapter.
 
-2.  **Install Python:**
-    Ensure you have Python 3.8+ installed on your system.
+### From PyPI (recommended)
 
-3.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+```bash
+pip install bitchat-cli
+```
+
+### From source
+
+```bash
+git clone https://github.com/dearabhin/bitchat-cli.git
+cd bitchat-cli
+pip install -e .
+```
 
 ## Usage
 
-Run the application from your terminal:
+Once installed, run it from anywhere:
 
 ```bash
-python main.py
+bitchat-cli      # or simply: bitchat
 ```
+
+From a source checkout you can also run `python -m bitchat_cli`.
 
 The application will automatically start scanning for nearby bitchat peers and broadcast your public messages to them.
 
@@ -41,6 +45,7 @@ The application will automatically start scanning for nearby bitchat peers and b
 
 -   `/w`: List known peers (peer ID → nickname).
 -   `/name <nickname>`: Change your nickname and re-announce.
+-   `/send <path>` (alias `/file`): Send an image, voice note, or file to peers.
 -   `/clear`: Clear the screen.
 -   `/help`: Show the list of available commands.
 
@@ -59,6 +64,8 @@ You can verify the wire-protocol implementation without any Bluetooth hardware:
 ```bash
 python selftest.py
 ```
+
+(Run from a source checkout; it imports the `bitchat_cli` package and needs only `cryptography`.)
 
 # Contributing to bitchat-cli
 

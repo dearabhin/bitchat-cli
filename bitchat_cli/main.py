@@ -1,8 +1,8 @@
 # main.py
 import asyncio
 import os
-from chat_state import ChatState
-from cli import CLI
+from .chat_state import ChatState
+from .cli import CLI
 
 
 def main():

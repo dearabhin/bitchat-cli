@@ -10,15 +10,15 @@ import os
 
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from identity import IdentityKeys
-from media import (
+from bitchat_cli.identity import IdentityKeys
+from bitchat_cli.media import (
     BitchatFilePacket,
     MAX_PAYLOAD_BYTES,
     category_for_mime,
     message_prefix,
     mime_for_extension,
 )
-from protocol import (
+from bitchat_cli.protocol import (
     AnnouncementPacket,
     BitchatPacket,
     MessagePadding,

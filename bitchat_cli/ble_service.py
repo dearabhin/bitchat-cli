@@ -25,8 +25,8 @@ from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from bleak.exc import BleakError
 
-from chat_state import ChatState
-from media import (
+from .chat_state import ChatState
+from .media import (
     BitchatFilePacket,
     MAX_PAYLOAD_BYTES,
     category_for_mime,
@@ -34,7 +34,7 @@ from media import (
     message_prefix,
     mime_for_extension,
 )
-from protocol import (
+from .protocol import (
     AnnouncementPacket,
     BitchatMessage,
     BitchatPacket,

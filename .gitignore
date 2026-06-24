@@ -18,3 +18,4 @@ env/
 # VSCode and PyCharm settings
 .vscode/
 .idea/
+.release-venv/

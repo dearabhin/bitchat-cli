@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bitchat-cli"
+dynamic = ["version"]
+description = "A Python CLI port of bitchat: serverless peer-to-peer public chat over a Bluetooth LE mesh, wire-compatible with the bitchat app (text + image/voice/file media)."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Abhin", email = "dearabhin@gmail.com" }]
+keywords = ["bitchat", "bluetooth", "ble", "mesh", "chat", "p2p", "decentralized", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Communications :: Chat",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    "bleak>=0.21.1",
+    "cryptography>=3.4.8",
+    "prompt-toolkit>=3.0.43",
+]
+
+[project.urls]
+Homepage = "https://github.com/dearabhin/bitchat-cli"
+Repository = "https://github.com/dearabhin/bitchat-cli"
+Issues = "https://github.com/dearabhin/bitchat-cli/issues"
+
+[project.scripts]
+bitchat-cli = "bitchat_cli.main:main"
+bitchat = "bitchat_cli.main:main"
+
+[tool.setuptools]
+packages = ["bitchat_cli"]
+
+[tool.setuptools.dynamic]
+version = { attr = "bitchat_cli.__version__" }
