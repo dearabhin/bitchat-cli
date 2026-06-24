@@ -9,7 +9,7 @@ exchange text, images, voice notes, and files one hop with a real bitchat phone 
 
 [![PyPI version](https://img.shields.io/pypi/v/bitchat-cli?style=flat-square&logo=pypi&logoColor=white&color=2ea44f)](https://pypi.org/project/bitchat-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/bitchat-cli?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/bitchat-cli/)
-[![Downloads](https://img.shields.io/pypi/dm/bitchat-cli?style=flat-square&color=blue)](https://pypi.org/project/bitchat-cli/)
+[![GitHub stars](https://img.shields.io/github/stars/dearabhin/bitchat-cli?style=flat-square&logo=github&color=yellow)](https://github.com/dearabhin/bitchat-cli/stargazers)
 [![Publish](https://img.shields.io/github/actions/workflow/status/dearabhin/bitchat-cli/publish.yml?style=flat-square&logo=githubactions&logoColor=white&label=publish)](https://github.com/dearabhin/bitchat-cli/actions/workflows/publish.yml)
 [![Latest release](https://img.shields.io/github/v/release/dearabhin/bitchat-cli?style=flat-square&logo=github&color=orange)](https://github.com/dearabhin/bitchat-cli/releases)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)

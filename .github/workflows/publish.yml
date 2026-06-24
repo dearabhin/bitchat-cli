@@ -54,6 +54,7 @@ jobs:
       url: https://pypi.org/project/bitchat-cli/
     permissions:
       id-token: write   # required for Trusted Publishing (OIDC)
+      contents: write   # required to attach the built artifacts to the release
     steps:
       - name: Download distribution artifacts
         uses: actions/download-artifact@v4
@@ -65,3 +66,10 @@ jobs:
         with:
           # No-op (success) if this version is already on PyPI, instead of failing.
           skip-existing: true
+      - name: Attach the wheel and sdist to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release upload "${{ github.event.release.tag_name }}"
+          dist/*.whl dist/*.tar.gz
+          --clobber --repo "${{ github.repository }}"
