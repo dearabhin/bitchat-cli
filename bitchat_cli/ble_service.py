@@ -25,6 +25,7 @@ from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from bleak.exc import BleakError
 
+from . import theme
 from .chat_state import ChatState
 from .media import (
     BitchatFilePacket,
@@ -85,10 +86,10 @@ class BLEService:
         try:
             await self._scanner.start()
         except BleakError as e:
-            self._sys(f"[ERROR] Could not start Bluetooth scan: {e}. "
+            self._err(f"Could not start Bluetooth scan: {e}. "
                       f"Check that a Bluetooth adapter is present and enabled.")
             return
-        self._sys("Scanning for bitchat peers over Bluetooth...")
+        self._sys("Scanning for bitchat peers over Bluetooth…")
 
         try:
             while self._running:
@@ -151,14 +152,14 @@ class BLEService:
             self.clients[addr] = client
             self.state.add_connection(addr)
             await client.start_notify(CHARACTERISTIC_UUID, self._on_notify)
-            self._sys(f"Connected to a bitchat peer ({addr}).")
+            self._ok(f"Connected to a bitchat peer ({addr}).")
             await self.send_announce()  # introduce ourselves so they list us
         except (asyncio.TimeoutError, BleakError) as e:
             reason = "timed out" if isinstance(e, asyncio.TimeoutError) else str(e)
             self._fail_device(addr, reason)
             await self._safe_disconnect(client)
         except Exception as e:  # noqa: BLE001 - never let a connect kill the loop
-            self._sys(f"[ERROR] Unexpected error with {addr}: {e}")
+            self._err(f"Unexpected error with {addr}: {e}")
             self._ignored.add(addr)
             await self._safe_disconnect(client)
         finally:
@@ -166,7 +167,7 @@ class BLEService:
 
     def _fail_device(self, addr: str, reason: str):
         if self._attempts.get(addr, 0) >= MAX_CONNECT_ATTEMPTS:
-            self._sys(f"Giving up on {addr} after {MAX_CONNECT_ATTEMPTS} attempts ({reason}).")
+            self._warn(f"Giving up on {addr} after {MAX_CONNECT_ATTEMPTS} attempts ({reason}).")
             self._ignored.add(addr)
         else:
             self._cooldown_until[addr] = time.monotonic() + RETRY_COOLDOWN
@@ -193,7 +194,7 @@ class BLEService:
         self._connecting.discard(addr)
         if addr in self.state.connected_addresses:
             self.state.remove_connection(addr)
-            self._sys(f"Disconnected from {addr}.")
+            self._leave(f"Disconnected from {addr}")
 
     # ------------------------------------------------------------------ #
     # Inbound packet handling
@@ -231,7 +232,7 @@ class BLEService:
             return
         peer_id = packet.sender_id.hex()
         if self.state.set_peer(peer_id, ann.nickname):
-            self._sys(f"'{ann.nickname}' is now online.")
+            self._join(f"{ann.nickname} is now online")
 
     def _handle_message(self, packet: BitchatPacket):
         try:
@@ -243,13 +244,13 @@ class BLEService:
         self.state.add_message(
             BitchatMessage(content=content, sender=sender, timestamp=packet.timestamp)
         )
-        self._print(f"<{sender}>: {content}")
+        self._chat(sender, content, ts_ms=packet.timestamp)
 
     def _handle_leave(self, packet: BitchatPacket):
         peer_id = packet.sender_id.hex()
         nickname = self.state.nickname_for(peer_id)
         self.state.remove_peer(peer_id)
-        self._sys(f"'{nickname}' went offline.")
+        self._leave(f"{nickname} went offline")
 
     def _handle_file(self, packet: BitchatPacket):
         """Decode a received FILE_TRANSFER payload, save it to disk, auto-open."""
@@ -263,7 +264,7 @@ class BLEService:
             path = DOWNLOAD_DIR / filename
             path.write_bytes(fp.content)
         except OSError as e:  # noqa: BLE001
-            self._sys(f"[WARN] Failed to save received media: {e}")
+            self._warn(f"Failed to save received media: {e}")
             return
 
         peer_id = packet.sender_id.hex()
@@ -272,7 +273,7 @@ class BLEService:
         self.state.add_message(
             BitchatMessage(content=content, sender=sender, timestamp=packet.timestamp)
         )
-        self._print(f"<{sender}>: {content} → {path}")
+        self._media(sender, category, filename, path=path, ts_ms=packet.timestamp)
         self._open_file(path)
 
     @staticmethod
@@ -330,6 +331,7 @@ class BLEService:
         await self._broadcast(packet)
         message = BitchatMessage(content=content, sender=self.state.nickname)
         self.state.add_message(message)
+        self._chat(self.state.nickname, content, is_self=True)
         return message
 
     async def send_leave(self):
@@ -346,25 +348,26 @@ class BLEService:
         try:
             content = p.read_bytes()
         except OSError as e:  # noqa: BLE001
-            self._sys(f"Could not read '{path}': {e}")
+            self._warn(f"Could not read '{path}': {e}")
             return
         if len(content) > MAX_PAYLOAD_BYTES:
-            self._sys(
+            self._warn(
                 f"'{p.name}' is {len(content)} bytes; the limit is "
                 f"{MAX_PAYLOAD_BYTES} bytes (1 MiB). Not sent."
             )
             return
         if not content:
-            self._sys(f"'{p.name}' is empty. Not sent.")
+            self._warn(f"'{p.name}' is empty. Not sent.")
             return
 
         mime = mime_for_extension(p.suffix)
+        category = category_for_mime(mime)
         fp = BitchatFilePacket(
             content=content, file_name=p.name, file_size=len(content), mime_type=mime,
         )
         payload = fp.encode()
         if payload is None:
-            self._sys(f"'{p.name}' could not be encoded for transfer. Not sent.")
+            self._warn(f"'{p.name}' could not be encoded for transfer. Not sent.")
             return
 
         packet = self._sign(BitchatPacket(
@@ -373,11 +376,12 @@ class BLEService:
         ))
         await self._broadcast(packet)
 
-        content_str = f"{message_prefix(category_for_mime(mime))}{p.name}"
+        content_str = f"{message_prefix(category)}{p.name}"
         self.state.add_message(
             BitchatMessage(content=content_str, sender=self.state.nickname)
         )
-        self._print(f"<{self.state.nickname}>: {content_str} ({len(content)} bytes)")
+        self._media(self.state.nickname, category, f"{p.name} ({len(content)} bytes)",
+                    is_self=True)
 
     async def _broadcast(self, packet: BitchatPacket):
         encoded = packet.encode()
@@ -390,7 +394,7 @@ class BLEService:
                 try:
                     await client.write_gatt_char(CHARACTERISTIC_UUID, frame, response=False)
                 except Exception as e:  # noqa: BLE001
-                    self._sys(f"[WARN] Failed to send to {addr}: {e}")
+                    self._warn(f"Failed to send to {addr}: {e}")
                     break
                 # Pace long fragment trains so the peer's BLE buffers can drain.
                 if fragmented:
@@ -415,12 +419,35 @@ class BLEService:
         return frames
 
     # ------------------------------------------------------------------ #
-    # Output helpers
+    # Output helpers — all chat/system output flows through here so the
+    # styling (see theme.py) stays consistent and the prompt is redrawn.
     # ------------------------------------------------------------------ #
-    def _sys(self, msg: str):
-        print(f"\n[SYSTEM] {msg}")
+    def _emit(self, line: str):
+        print(line)
         self.cli_redraw()
 
-    def _print(self, msg: str):
-        print(f"\n{msg}")
-        self.cli_redraw()
+    def _sys(self, msg: str):
+        self._emit(theme.system(msg))
+
+    def _ok(self, msg: str):
+        self._emit(theme.ok(msg))
+
+    def _warn(self, msg: str):
+        self._emit(theme.warn(msg))
+
+    def _err(self, msg: str):
+        self._emit(theme.error(msg))
+
+    def _join(self, msg: str):
+        self._emit(theme.join(msg))
+
+    def _leave(self, msg: str):
+        self._emit(theme.leave(msg))
+
+    def _chat(self, sender: str, content: str, ts_ms=None, is_self: bool = False):
+        self._emit(theme.chat(sender, content, ts_ms=ts_ms, is_self=is_self))
+
+    def _media(self, sender: str, category: str, label: str, path=None,
+               ts_ms=None, is_self: bool = False):
+        self._emit(theme.media(sender, category, label, path=path,
+                               ts_ms=ts_ms, is_self=is_self))

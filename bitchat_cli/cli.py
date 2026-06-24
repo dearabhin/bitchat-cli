@@ -3,8 +3,10 @@ import asyncio
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.patch_stdout import patch_stdout
 
+from . import __version__, theme
 from .ble_service import BLEService
 from .chat_state import ChatState
 
@@ -21,68 +23,64 @@ class CLI:
             )
         )
 
-    def print_logo(self):
-        green, reset = "\033[92m", "\033[0m"
-        print(f"""{green}
-██████╗ ██╗████████╗ ██████╗██╗  ██╗ █████╗ ████████╗
-██╔══██╗██║╚══██╔══╝██╔════╝██║  ██║██╔══██╗╚══██╔══╝
-██████╔╝██║   ██║   ██║     ███████║███████║   ██║
-██╔══██╗██║   ██║   ██║     ██╔══██║██╔══██║   ██║
-██████╔╝██║   ██║   ╚██████╗██║  ██║██║  ██║   ██║
-╚═════╝ ╚═╝   ╚═╝    ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
-                    C L I
-{reset}""")
-
     def redraw_prompt(self):
         if self.session.app:
             self.session.app.invalidate()
 
     def get_prompt_message(self):
-        return f"<{self.state.nickname}> "
+        # ANSI() lets prompt_toolkit render the coloured prompt correctly.
+        return ANSI(theme.prompt(self.state.nickname))
+
+    def _out(self, line: str):
+        print(line)
+        self.redraw_prompt()
 
     async def handle_command(self, text: str):
         parts = text.split(" ")
         cmd = parts[0].lower()
 
         if cmd == "/w":
-            print("[SYSTEM] Known peers:")
             if not self.state.peer_nicknames:
-                print("  (none yet) - still scanning / waiting for announces...")
+                self._out(theme.system("No peers yet — still scanning / waiting for announces…"))
             else:
+                n = len(self.state.peer_nicknames)
+                self._out(theme.system(f"Known peers ({n}):"))
                 for peer_id, nick in self.state.peer_nicknames.items():
-                    print(f"  - {nick} ({peer_id})")
+                    name = theme.sgr(nick, theme.BOLD, theme.nick_color(nick))
+                    self._out(f"  {name} {theme.sgr(peer_id, theme.PATH)}")
         elif cmd == "/name":
             new_nick = text[len("/name"):].strip()
             if not new_nick:
-                print("[SYSTEM] Usage: /name <new nickname>")
+                self._out(theme.warn("Usage: /name <new nickname>"))
             else:
+                old = self.state.nickname
                 self.state.nickname = new_nick
                 await self.ble_service.send_announce()
-                print(f"[SYSTEM] Nickname changed to '{new_nick}'.")
+                self._out(theme.system(f"Nickname changed from '{old}' to '{new_nick}'."))
         elif cmd in ("/send", "/file"):
             path = text[len(cmd):].strip().strip('"').strip("'")
             if not path:
-                print(f"[SYSTEM] Usage: {cmd} <path-to-file>")
+                self._out(theme.warn(f"Usage: {cmd} <path-to-file>"))
             else:
                 await self.ble_service.send_file(path)
         elif cmd == "/clear":
             print("\033c", end="")
         elif cmd == "/help":
-            print("[SYSTEM] Available commands:")
-            print("  /w            - List known peers.")
-            print("  /name <nick>  - Change your nickname and re-announce.")
-            print("  /send <path>  - Send an image, voice note, or file to peers.")
-            print("  /clear        - Clear the screen.")
-            print("  /help         - Show this help message.")
+            self._out(theme.system("Commands:"))
+            for name, desc in (
+                ("/w", "List known peers."),
+                ("/name <nick>", "Change your nickname and re-announce."),
+                ("/send <path>", "Send an image, voice note, or file to peers."),
+                ("/clear", "Clear the screen."),
+                ("/help", "Show this help message."),
+            ):
+                cmd_col = theme.sgr(name.ljust(14), theme.BOLD, theme.BRAND)
+                self._out(f"  {cmd_col} {theme.sgr(desc, theme.SYS)}")
         else:
-            print(f"[SYSTEM] Unknown command: {cmd}. Type /help for commands.")
+            self._out(theme.warn(f"Unknown command: {cmd}. Type /help for commands."))
 
     async def run(self):
-        self.print_logo()
-        print(f"[SYSTEM] Welcome to Bitchat CLI! Your nickname is {self.state.nickname}.")
-        print(f"[SYSTEM] Your peer ID is {self.state.my_peer_id_hex}.")
-        print("[SYSTEM] Messages are broadcast publicly to bitchat peers in range.")
-        print("[SYSTEM] Type a message and press Enter to send, or /help for commands.")
+        print(theme.banner(self.state.nickname, self.state.my_peer_id_hex, __version__))
 
         ble_task = None
         try:
@@ -96,12 +94,12 @@ class CLI:
                     if text.startswith("/"):
                         await self.handle_command(text)
                     else:
+                        # send_public_message renders the local echo via the theme.
                         await self.ble_service.send_public_message(text)
-                        print(f"<{self.state.nickname}>: {text}")
         except (EOFError, KeyboardInterrupt):
-            print("\n[SYSTEM] Shutting down...")
+            print("\n" + theme.system("Shutting down…"))
         finally:
             if ble_task:
                 ble_task.cancel()
             await self.ble_service.stop()
-            print("[SYSTEM] Shutdown complete.")
+            print(theme.system("Shutdown complete."))

@@ -19,3 +19,4 @@ env/
 .vscode/
 .idea/
 .release-venv/
+*venv/
