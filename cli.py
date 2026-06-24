@@ -17,7 +17,7 @@ class CLI:
         self.ble_service = BLEService(state, self.redraw_prompt)
         self.session = PromptSession(
             completer=WordCompleter(
-                ["/w", "/name", "/clear", "/help"], ignore_case=True
+                ["/w", "/name", "/send", "/file", "/clear", "/help"], ignore_case=True
             )
         )
 
@@ -59,12 +59,19 @@ class CLI:
                 self.state.nickname = new_nick
                 await self.ble_service.send_announce()
                 print(f"[SYSTEM] Nickname changed to '{new_nick}'.")
+        elif cmd in ("/send", "/file"):
+            path = text[len(cmd):].strip().strip('"').strip("'")
+            if not path:
+                print(f"[SYSTEM] Usage: {cmd} <path-to-file>")
+            else:
+                await self.ble_service.send_file(path)
         elif cmd == "/clear":
             print("\033c", end="")
         elif cmd == "/help":
             print("[SYSTEM] Available commands:")
             print("  /w            - List known peers.")
             print("  /name <nick>  - Change your nickname and re-announce.")
+            print("  /send <path>  - Send an image, voice note, or file to peers.")
             print("  /clear        - Clear the screen.")
             print("  /help         - Show this help message.")
         else:

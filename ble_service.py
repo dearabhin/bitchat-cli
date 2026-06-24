@@ -14,7 +14,10 @@
 
 import asyncio
 import os
+import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Dict, List, Set
 
 from bleak import BleakClient, BleakScanner
@@ -23,6 +26,14 @@ from bleak.backends.scanner import AdvertisementData
 from bleak.exc import BleakError
 
 from chat_state import ChatState
+from media import (
+    BitchatFilePacket,
+    MAX_PAYLOAD_BYTES,
+    category_for_mime,
+    extension_for_mime,
+    message_prefix,
+    mime_for_extension,
+)
 from protocol import (
     AnnouncementPacket,
     BitchatMessage,
@@ -41,6 +52,10 @@ MAX_CONNECT_ATTEMPTS = 3        # before a device is permanently ignored
 RETRY_COOLDOWN = 15.0           # seconds to wait before re-attempting a device
 ANNOUNCE_INTERVAL = 30.0        # seconds between periodic re-announces
 MAX_FRAME_SIZE = 480            # bytes before a packet is fragmented for BLE
+FRAGMENT_PACING = 0.005         # seconds between BLE writes when sending a fragment train
+
+# Where received media (images, voice notes, files) is saved.
+DOWNLOAD_DIR = Path.home() / ".bitchat" / "downloads"
 
 
 class BLEService:
@@ -206,6 +221,8 @@ class BLEService:
             self._handle_message(packet)
         elif packet.type == MessageType.LEAVE:
             self._handle_leave(packet)
+        elif packet.type == MessageType.FILE_TRANSFER:
+            self._handle_file(packet)
         # NOISE_HANDSHAKE / NOISE_ENCRYPTED / others: private traffic, ignored.
 
     def _handle_announce(self, packet: BitchatPacket):
@@ -233,6 +250,55 @@ class BLEService:
         nickname = self.state.nickname_for(peer_id)
         self.state.remove_peer(peer_id)
         self._sys(f"'{nickname}' went offline.")
+
+    def _handle_file(self, packet: BitchatPacket):
+        """Decode a received FILE_TRANSFER payload, save it to disk, auto-open."""
+        fp = BitchatFilePacket.decode(packet.payload)
+        if fp is None:
+            return
+        category = category_for_mime(fp.mime_type)
+        filename = self._safe_filename(fp.file_name, fp.mime_type)
+        try:
+            DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            path = DOWNLOAD_DIR / filename
+            path.write_bytes(fp.content)
+        except OSError as e:  # noqa: BLE001
+            self._sys(f"[WARN] Failed to save received media: {e}")
+            return
+
+        peer_id = packet.sender_id.hex()
+        sender = self.state.nickname_for(peer_id)
+        content = f"{message_prefix(category)}{filename}"
+        self.state.add_message(
+            BitchatMessage(content=content, sender=sender, timestamp=packet.timestamp)
+        )
+        self._print(f"<{sender}>: {content} → {path}")
+        self._open_file(path)
+
+    @staticmethod
+    def _safe_filename(name, mime) -> str:
+        """A safe basename for a received file (no path traversal)."""
+        base = os.path.basename(name) if name else ""
+        base = base.replace("\x00", "").strip().lstrip(".")
+        if not base or base in ("", "."):
+            ext = extension_for_mime(mime)
+            base = f"{int(time.time() * 1000)}.{ext}"
+        return base
+
+    def _open_file(self, path: Path):
+        """Best-effort, non-blocking open with the OS default viewer."""
+        try:
+            if sys.platform == "darwin":
+                cmd = ["open", str(path)]
+            elif sys.platform.startswith("win"):
+                cmd = ["cmd", "/c", "start", "", str(path)]
+            else:
+                cmd = ["xdg-open", str(path)]
+            subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        except Exception:  # noqa: BLE001 - opener missing/unavailable is non-fatal
+            pass
 
     # ------------------------------------------------------------------ #
     # Outbound packets
@@ -274,9 +340,49 @@ class BLEService:
         ))
         await self._broadcast(packet)
 
+    async def send_file(self, path: str):
+        """Read a file from disk and broadcast it as a FILE_TRANSFER packet."""
+        p = Path(path).expanduser()
+        try:
+            content = p.read_bytes()
+        except OSError as e:  # noqa: BLE001
+            self._sys(f"Could not read '{path}': {e}")
+            return
+        if len(content) > MAX_PAYLOAD_BYTES:
+            self._sys(
+                f"'{p.name}' is {len(content)} bytes; the limit is "
+                f"{MAX_PAYLOAD_BYTES} bytes (1 MiB). Not sent."
+            )
+            return
+        if not content:
+            self._sys(f"'{p.name}' is empty. Not sent.")
+            return
+
+        mime = mime_for_extension(p.suffix)
+        fp = BitchatFilePacket(
+            content=content, file_name=p.name, file_size=len(content), mime_type=mime,
+        )
+        payload = fp.encode()
+        if payload is None:
+            self._sys(f"'{p.name}' could not be encoded for transfer. Not sent.")
+            return
+
+        packet = self._sign(BitchatPacket(
+            type=MessageType.FILE_TRANSFER, sender_id=self.state.my_peer_id,
+            recipient_id=None, payload=payload, ttl=DEFAULT_TTL,
+        ))
+        await self._broadcast(packet)
+
+        content_str = f"{message_prefix(category_for_mime(mime))}{p.name}"
+        self.state.add_message(
+            BitchatMessage(content=content_str, sender=self.state.nickname)
+        )
+        self._print(f"<{self.state.nickname}>: {content_str} ({len(content)} bytes)")
+
     async def _broadcast(self, packet: BitchatPacket):
         encoded = packet.encode()
-        frames = [encoded] if len(encoded) <= MAX_FRAME_SIZE else self._fragment(encoded, packet.type)
+        fragmented = len(encoded) > MAX_FRAME_SIZE
+        frames = self._fragment(encoded, packet.type) if fragmented else [encoded]
         for addr, client in list(self.clients.items()):
             if not client.is_connected:
                 continue
@@ -286,6 +392,9 @@ class BLEService:
                 except Exception as e:  # noqa: BLE001
                     self._sys(f"[WARN] Failed to send to {addr}: {e}")
                     break
+                # Pace long fragment trains so the peer's BLE buffers can drain.
+                if fragmented:
+                    await asyncio.sleep(FRAGMENT_PACING)
 
     def _fragment(self, encoded_packet: bytes, original_type: int) -> List[bytes]:
         """Split an oversized encoded packet into FRAGMENT packets."""
