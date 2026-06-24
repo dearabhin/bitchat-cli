@@ -1,3 +1,3 @@
 """bitchat-cli: a Python CLI port of bitchat (serverless P2P chat over BLE mesh)."""
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"

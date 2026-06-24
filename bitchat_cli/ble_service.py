@@ -24,6 +24,8 @@ from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from bleak.exc import BleakError
+from prompt_toolkit import print_formatted_text
+from prompt_toolkit.formatted_text import ANSI
 
 from . import theme
 from .chat_state import ChatState
@@ -370,10 +372,17 @@ class BLEService:
             self._warn(f"'{p.name}' could not be encoded for transfer. Not sent.")
             return
 
+        if not self.clients:
+            self._warn(f"No peers connected yet — '{p.name}' not sent. "
+                       f"Wait until a peer is online, then try again.")
+            return
+
         packet = self._sign(BitchatPacket(
             type=MessageType.FILE_TRANSFER, sender_id=self.state.my_peer_id,
             recipient_id=None, payload=payload, ttl=DEFAULT_TTL, version=2,
         ))
+        kib = len(content) / 1024
+        self._sys(f"Sending {p.name} ({kib:.0f} KiB) — large files take a few seconds…")
         await self._broadcast(packet)
 
         content_str = f"{message_prefix(category)}{p.name}"
@@ -433,7 +442,11 @@ class BLEService:
                 type=MessageType.FRAGMENT, sender_id=self.state.my_peer_id,
                 recipient_id=None, payload=payload, ttl=DEFAULT_TTL,
             )
-            frames.append(frag.encode())
+            # Encode WITHOUT padding: PKCS#7 padding would round a ~475-byte
+            # fragment up to a 512-byte block, which can exceed the negotiated
+            # ATT MTU on a write-without-response and be silently dropped. The
+            # receiver parses by explicit payload length, so padding is optional.
+            frames.append(frag.encode(padding=False))
         return frames
 
     # ------------------------------------------------------------------ #
@@ -441,7 +454,10 @@ class BLEService:
     # styling (see theme.py) stays consistent and the prompt is redrawn.
     # ------------------------------------------------------------------ #
     def _emit(self, line: str):
-        print(line)
+        # Under prompt_toolkit's patch_stdout(), a plain print() of raw ANSI
+        # escapes is rendered literally; print_formatted_text(ANSI(...)) parses
+        # the codes and renders them correctly above the live prompt.
+        print_formatted_text(ANSI(line))
         self.cli_redraw()
 
     def _sys(self, msg: str):

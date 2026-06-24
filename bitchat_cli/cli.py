@@ -1,7 +1,8 @@
 # cli.py
 import asyncio
+import os
 
-from prompt_toolkit import PromptSession
+from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -32,7 +33,9 @@ class CLI:
         return ANSI(theme.prompt(self.state.nickname))
 
     def _out(self, line: str):
-        print(line)
+        # ANSI(...) so prompt_toolkit renders the colour codes (a plain print()
+        # under patch_stdout() would show the escape sequences literally).
+        print_formatted_text(ANSI(line))
         self.redraw_prompt()
 
     async def handle_command(self, text: str):
@@ -77,10 +80,16 @@ class CLI:
                 cmd_col = theme.sgr(name.ljust(14), theme.BOLD, theme.BRAND)
                 self._out(f"  {cmd_col} {theme.sgr(desc, theme.SYS)}")
         else:
-            self._out(theme.warn(f"Unknown command: {cmd}. Type /help for commands."))
+            candidate = os.path.expanduser(text.strip())
+            if os.path.isfile(candidate):
+                # A bare file path starts with '/', so it looks like a command.
+                self._out(theme.warn(f"To send a file, use:  /send {text.strip()}"))
+            else:
+                self._out(theme.warn(f"Unknown command: {cmd}. Type /help for commands."))
 
     async def run(self):
-        print(theme.banner(self.state.nickname, self.state.my_peer_id_hex, __version__))
+        print_formatted_text(ANSI(theme.banner(
+            self.state.nickname, self.state.my_peer_id_hex, __version__)))
 
         ble_task = None
         try:
