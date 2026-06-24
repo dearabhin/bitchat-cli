@@ -372,7 +372,7 @@ class BLEService:
 
         packet = self._sign(BitchatPacket(
             type=MessageType.FILE_TRANSFER, sender_id=self.state.my_peer_id,
-            recipient_id=None, payload=payload, ttl=DEFAULT_TTL,
+            recipient_id=None, payload=payload, ttl=DEFAULT_TTL, version=2,
         ))
         await self._broadcast(packet)
 
@@ -387,18 +387,36 @@ class BLEService:
         encoded = packet.encode()
         fragmented = len(encoded) > MAX_FRAME_SIZE
         frames = self._fragment(encoded, packet.type) if fragmented else [encoded]
+        failed = []  # (addr, reason) of links to tear down after this pass
         for addr, client in list(self.clients.items()):
             if not client.is_connected:
+                failed.append((addr, "link down"))
                 continue
             for frame in frames:
                 try:
                     await client.write_gatt_char(CHARACTERISTIC_UUID, frame, response=False)
                 except Exception as e:  # noqa: BLE001
-                    self._warn(f"Failed to send to {addr}: {e}")
+                    # A write error (e.g. BlueZ stale characteristic) means the
+                    # link is dead even if is_connected still reports True. Drop
+                    # it once rather than retrying on every message/announce.
+                    failed.append((addr, str(e)))
                     break
                 # Pace long fragment trains so the peer's BLE buffers can drain.
                 if fragmented:
                     await asyncio.sleep(FRAGMENT_PACING)
+        for addr, reason in failed:
+            await self._drop_client(addr, reason)
+
+    async def _drop_client(self, addr: str, reason: str = ""):
+        """Tear down a dead link and let the scanner reconnect later."""
+        client = self.clients.pop(addr, None)
+        if client is None:
+            return
+        self.state.remove_connection(addr)
+        # Hold off immediate reconnection so we don't tight-loop on a bad peer.
+        self._cooldown_until[addr] = time.monotonic() + RETRY_COOLDOWN
+        self._leave(f"Lost connection to {addr}" + (f" ({reason})" if reason else ""))
+        await self._safe_disconnect(client)
 
     def _fragment(self, encoded_packet: bytes, original_type: int) -> List[bytes]:
         """Split an oversized encoded packet into FRAGMENT packets."""

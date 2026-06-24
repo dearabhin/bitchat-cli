@@ -182,6 +182,47 @@ def test_file_transfer_packet_wrap():
     check("inner file content recovered", inner is not None and inner.content == content)
 
 
+def test_large_file_packet_needs_v2():
+    # Regression: a payload over 64 KiB must encode as a version-2 packet
+    # (4-byte length). Version 1 (2-byte length) must refuse it loudly rather
+    # than silently overflowing struct's 'H' field.
+    content = b"\x89PNG\r\n\x1a\n" + os.urandom(200_000)  # ~200 KiB, like a real image
+    fp = BitchatFilePacket(content=content, file_name="map.png", mime_type="image/png")
+    payload = fp.encode()
+    check("large file payload exceeds the v1 length limit", len(payload) > 0xFFFF)
+
+    # Version 1 must raise (this is exactly the crash we fixed).
+    v1 = BitchatPacket(type=MessageType.FILE_TRANSFER, sender_id=os.urandom(8),
+                       recipient_id=None, payload=payload, ttl=7, version=1)
+    try:
+        v1.encode()
+        raised = False
+    except ValueError:
+        raised = True
+    check("version-1 encode rejects oversize payload", raised)
+
+    # Version 2 must encode, sign-canonicalise, decode, and recover the content.
+    keys = IdentityKeys()
+    v2 = BitchatPacket(type=MessageType.FILE_TRANSFER, sender_id=os.urandom(8),
+                       recipient_id=None, payload=payload, ttl=7, version=2)
+    v2.signature = keys.sign(v2.data_for_signing())
+    decoded = BitchatPacket.decode(v2.encode())
+    check("version-2 large packet decodes", decoded is not None)
+    check("version-2 preserved", decoded.version == 2)
+    check("version-2 payload length preserved", len(decoded.payload) == len(payload))
+    inner = BitchatFilePacket.decode(decoded.payload)
+    check("v2 inner image content recovered", inner is not None and inner.content == content)
+
+    # The signature still verifies against the reconstructed canonical bytes.
+    pub = ed25519.Ed25519PublicKey.from_public_bytes(keys.signing_public_key_bytes())
+    try:
+        pub.verify(decoded.signature, decoded.data_for_signing())
+        ok = True
+    except Exception:
+        ok = False
+    check("v2 file-transfer signature verifies", ok)
+
+
 def test_file_fragment_reassembly():
     # A file packet exceeding one BLE write reassembles back to identical bytes.
     sender = os.urandom(8)
@@ -240,6 +281,7 @@ if __name__ == "__main__":
         test_file_packet_roundtrip,
         test_file_packet_oversize_rejected,
         test_file_transfer_packet_wrap,
+        test_large_file_packet_needs_v2,
         test_file_fragment_reassembly,
         test_mime_helpers,
         test_public_message_payload_is_raw,

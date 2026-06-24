@@ -117,7 +117,13 @@ class BitchatPacket:
     version: int = VERSION
 
     def encode(self, padding: bool = True) -> bytes:
-        """Serialize to the binary wire format. We never compress on send."""
+        """Serialize to the binary wire format. We never compress on send.
+
+        Version 1 carries a 2-byte payload length (max 65535 bytes); version 2
+        carries a 4-byte length, required for large payloads such as file
+        transfers (images/voice/files can be up to 1 MiB). This mirrors upstream,
+        which sends FILE_TRANSFER packets as version 2.
+        """
         flags = 0
         if self.recipient_id is not None:
             flags |= PacketFlags.HAS_RECIPIENT
@@ -125,11 +131,24 @@ class BitchatPacket:
             flags |= PacketFlags.HAS_SIGNATURE
 
         sender = self.sender_id[:SENDER_ID_SIZE].ljust(SENDER_ID_SIZE, b"\x00")
+        payload_len = len(self.payload)
 
-        data = struct.pack(
-            ">BBBQBH", self.version, int(self.type), self.ttl,
-            self.timestamp & 0xFFFFFFFFFFFFFFFF, flags, len(self.payload),
-        )
+        if self.version >= 2:
+            data = struct.pack(
+                ">BBBQB", self.version, int(self.type), self.ttl,
+                self.timestamp & 0xFFFFFFFFFFFFFFFF, flags,
+            )
+            data += payload_len.to_bytes(4, "big")
+        else:
+            if payload_len > 0xFFFF:
+                raise ValueError(
+                    f"payload of {payload_len} bytes exceeds the version-1 limit "
+                    f"(65535 bytes); use version=2 for large payloads"
+                )
+            data = struct.pack(
+                ">BBBQBH", self.version, int(self.type), self.ttl,
+                self.timestamp & 0xFFFFFFFFFFFFFFFF, flags, payload_len,
+            )
         data += sender
         if self.recipient_id is not None:
             data += self.recipient_id[:RECIPIENT_ID_SIZE].ljust(RECIPIENT_ID_SIZE, b"\x00")
