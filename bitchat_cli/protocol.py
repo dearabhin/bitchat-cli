@@ -286,6 +286,21 @@ class BitchatMessage:
     sender: str = ""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
+    sender_id: str = ""       # 8-byte peer ID as hex ("" if unknown)
+    is_self: bool = False     # True for messages this client sent
+    media_path: Optional[str] = None  # local path for received/sent media
+
+    def to_dict(self) -> dict:
+        """JSON-friendly representation (used by the WebSocket control API)."""
+        return {
+            "id": self.id,
+            "sender": self.sender,
+            "sender_id": self.sender_id,
+            "content": self.content,
+            "timestamp": self.timestamp,
+            "is_self": self.is_self,
+            "media_path": self.media_path,
+        }
 
 
 # --------------------------------------------------------------------------- #

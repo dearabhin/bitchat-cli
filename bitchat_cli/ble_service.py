@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
@@ -75,6 +75,11 @@ class BLEService:
         self._reassembler = FragmentReassembler()
         self._scanner: BleakScanner = None
         self._running = False
+        # Serialize outbound fragment trains so concurrent senders (terminal
+        # input and WebSocket clients) cannot interleave writes to a peer.
+        # Created lazily: on Python 3.8/3.9 asyncio.Lock binds the loop at
+        # construction time, and the service is built before asyncio.run().
+        self._send_lock = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -244,7 +249,8 @@ class BLEService:
         peer_id = packet.sender_id.hex()
         sender = self.state.nickname_for(peer_id)
         self.state.add_message(
-            BitchatMessage(content=content, sender=sender, timestamp=packet.timestamp)
+            BitchatMessage(content=content, sender=sender, sender_id=peer_id,
+                           timestamp=packet.timestamp)
         )
         self._chat(sender, content, ts_ms=packet.timestamp)
 
@@ -273,7 +279,8 @@ class BLEService:
         sender = self.state.nickname_for(peer_id)
         content = f"{message_prefix(category)}{filename}"
         self.state.add_message(
-            BitchatMessage(content=content, sender=sender, timestamp=packet.timestamp)
+            BitchatMessage(content=content, sender=sender, sender_id=peer_id,
+                           timestamp=packet.timestamp, media_path=str(path))
         )
         self._media(sender, category, filename, path=path, ts_ms=packet.timestamp)
         self._open_file(path)
@@ -331,7 +338,10 @@ class BLEService:
             recipient_id=None, payload=content.encode("utf-8"), ttl=DEFAULT_TTL,
         ))
         await self._broadcast(packet)
-        message = BitchatMessage(content=content, sender=self.state.nickname)
+        message = BitchatMessage(
+            content=content, sender=self.state.nickname,
+            sender_id=self.state.my_peer_id_hex, is_self=True,
+        )
         self.state.add_message(message)
         self._chat(self.state.nickname, content, is_self=True)
         return message
@@ -344,23 +354,27 @@ class BLEService:
         ))
         await self._broadcast(packet)
 
-    async def send_file(self, path: str):
-        """Read a file from disk and broadcast it as a FILE_TRANSFER packet."""
+    async def send_file(self, path: str) -> Tuple[bool, Optional[str]]:
+        """Read a file from disk and broadcast it as a FILE_TRANSFER packet.
+
+        Returns (ok, error_message); ok is False when nothing was sent.
+        """
+        def fail(msg: str) -> Tuple[bool, str]:
+            self._warn(msg)
+            return False, msg
+
         p = Path(path).expanduser()
         try:
             content = p.read_bytes()
         except OSError as e:  # noqa: BLE001
-            self._warn(f"Could not read '{path}': {e}")
-            return
+            return fail(f"Could not read '{path}': {e}")
         if len(content) > MAX_PAYLOAD_BYTES:
-            self._warn(
+            return fail(
                 f"'{p.name}' is {len(content)} bytes; the limit is "
                 f"{MAX_PAYLOAD_BYTES} bytes (1 MiB). Not sent."
             )
-            return
         if not content:
-            self._warn(f"'{p.name}' is empty. Not sent.")
-            return
+            return fail(f"'{p.name}' is empty. Not sent.")
 
         mime = mime_for_extension(p.suffix)
         category = category_for_mime(mime)
@@ -369,13 +383,11 @@ class BLEService:
         )
         payload = fp.encode()
         if payload is None:
-            self._warn(f"'{p.name}' could not be encoded for transfer. Not sent.")
-            return
+            return fail(f"'{p.name}' could not be encoded for transfer. Not sent.")
 
         if not self.clients:
-            self._warn(f"No peers connected yet — '{p.name}' not sent. "
-                       f"Wait until a peer is online, then try again.")
-            return
+            return fail(f"No peers connected yet — '{p.name}' not sent. "
+                        f"Wait until a peer is online, then try again.")
 
         packet = self._sign(BitchatPacket(
             type=MessageType.FILE_TRANSFER, sender_id=self.state.my_peer_id,
@@ -387,32 +399,43 @@ class BLEService:
 
         content_str = f"{message_prefix(category)}{p.name}"
         self.state.add_message(
-            BitchatMessage(content=content_str, sender=self.state.nickname)
+            BitchatMessage(content=content_str, sender=self.state.nickname,
+                           sender_id=self.state.my_peer_id_hex, is_self=True,
+                           media_path=str(p))
         )
         self._media(self.state.nickname, category, f"{p.name} ({len(content)} bytes)",
                     is_self=True)
+        return True, None
 
     async def _broadcast(self, packet: BitchatPacket):
         encoded = packet.encode()
         fragmented = len(encoded) > MAX_FRAME_SIZE
         frames = self._fragment(encoded, packet.type) if fragmented else [encoded]
         failed = []  # (addr, reason) of links to tear down after this pass
-        for addr, client in list(self.clients.items()):
-            if not client.is_connected:
-                failed.append((addr, "link down"))
-                continue
-            for frame in frames:
-                try:
-                    await client.write_gatt_char(CHARACTERISTIC_UUID, frame, response=False)
-                except Exception as e:  # noqa: BLE001
-                    # A write error (e.g. BlueZ stale characteristic) means the
-                    # link is dead even if is_connected still reports True. Drop
-                    # it once rather than retrying on every message/announce.
-                    failed.append((addr, str(e)))
-                    break
-                # Pace long fragment trains so the peer's BLE buffers can drain.
-                if fragmented:
-                    await asyncio.sleep(FRAGMENT_PACING)
+        # One fragment train at a time: interleaving frames from two senders
+        # would make peers reassemble garbage.
+        if self._send_lock is None:
+            self._send_lock = asyncio.Lock()
+        async with self._send_lock:
+            for addr, client in list(self.clients.items()):
+                if not client.is_connected:
+                    failed.append((addr, "link down"))
+                    continue
+                for frame in frames:
+                    try:
+                        await client.write_gatt_char(
+                            CHARACTERISTIC_UUID, frame, response=False
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        # A write error (e.g. BlueZ stale characteristic) means
+                        # the link is dead even if is_connected still reports
+                        # True. Drop it once rather than retrying on every
+                        # message/announce.
+                        failed.append((addr, str(e)))
+                        break
+                    # Pace long fragment trains so the peer's BLE buffers can drain.
+                    if fragmented:
+                        await asyncio.sleep(FRAGMENT_PACING)
         for addr, reason in failed:
             await self._drop_client(addr, reason)
 

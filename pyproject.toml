@@ -28,6 +28,10 @@ dependencies = [
     "prompt-toolkit>=3.0.43",
 ]
 
+[project.optional-dependencies]
+# `bitchat --ws` automation endpoint.
+ws = ["websockets>=12"]
+
 [project.urls]
 Homepage = "https://github.com/dearabhin/bitchat-cli"
 Repository = "https://github.com/dearabhin/bitchat-cli"

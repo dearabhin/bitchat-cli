@@ -72,6 +72,51 @@ It immediately starts scanning for nearby bitchat peers, connects to any in rang
 | `/clear` | Clear the screen. |
 | `/help` | Show the list of available commands. |
 
+## 🔌 WebSocket control (automation)
+
+Start the CLI with `--ws` to drive it from a script or another program:
+
+```bash
+pip install "bitchat-cli[ws]"
+bitchat --ws --ws-token change-me      # ws://127.0.0.1:8787
+```
+
+`--ws-host` / `--ws-port` change the bind address (port `0` picks a free one). The token may also come from `BITCHAT_WS_TOKEN`, which keeps it out of shell history and the process list. The server refuses to bind a non-loopback address without a token.
+
+Every message is one JSON object. On connect (and after `auth`) the server sends a `snapshot` with your nickname, peer ID, peers, links and recent history. State events (`message`, `peer_joined`, `peer_updated`, `peer_left`, `link_up`, `link_down`, `nickname`) are pushed as they happen. Commands take an optional `id`, echoed back as `request_id` in the reply.
+
+| Client → server | Effect |
+| --- | --- |
+| `{"type":"auth","token":"…"}` | Authenticate (required first when a token is set). |
+| `{"type":"send","content":"hello"}` | Broadcast a public message. |
+| `{"type":"send_file","path":"/tmp/pic.jpg"}` | Broadcast an image, voice note or file. |
+| `{"type":"set_nickname","nickname":"bot"}` | Rename and re-announce. |
+| `{"type":"announce"}` | Re-announce immediately. |
+| `{"type":"peers"}` | Ask for the current peer list. |
+| `{"type":"history","limit":50}` | Ask for recent messages (max 500). |
+| `{"type":"ping"}` | Liveness check (`pong`). |
+
+Example with Python:
+
+```python
+import asyncio, json
+import websockets
+
+async def main():
+    async with websockets.connect("ws://127.0.0.1:8787") as ws:
+        await ws.send(json.dumps({"type": "auth", "token": "change-me"}))
+        await ws.send(json.dumps({"type": "send", "content": "hello from a bot", "id": "1"}))
+        async for raw in ws:
+            event = json.loads(raw)
+            print(event)
+            if event.get("type") == "message" and not event.get("is_self"):
+                await ws.send(json.dumps({"type": "send", "content": f"echo: {event['content']}"}))
+
+asyncio.run(main())
+```
+
+The control endpoint is a trusted local channel: `send_file` can read any file the CLI can read, so keep the token secret and leave the default loopback bind in place unless you know what you are doing. Without a token, connections that carry a browser `Origin` header are rejected, so a random web page cannot drive the CLI; with a token, browser clients are allowed.
+
 ## 🔧 How it works
 
 bitchat-cli uses [`bleak`](https://github.com/hbldh/bleak) as a BLE **central** that discovers, connects to, and exchanges packets with real bitchat peers in range. It implements bitchat's binary wire protocol — announce / leave / public-message / file-transfer packets, PKCS#7 padding, fragment reassembly, and Ed25519 packet signing — so it can take part in **public chat** with the official app.
@@ -88,6 +133,12 @@ python selftest.py
 ```
 
 Run it from a source checkout — it imports the `bitchat_cli` package and covers packet encode/decode, signatures, fragmentation, and the media file format.
+
+The WebSocket control API has its own offline test (needs the `ws` extra; no Bluetooth):
+
+```bash
+python ws_selftest.py
+```
 
 ## 🤝 Contributing
 
