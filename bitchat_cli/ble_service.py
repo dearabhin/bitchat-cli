@@ -29,6 +29,7 @@ from prompt_toolkit.formatted_text import ANSI
 
 from . import theme
 from .chat_state import ChatState
+from .identity import peer_id_from_noise_public_key, verify_signature
 from .media import (
     BitchatFilePacket,
     MAX_PAYLOAD_BYTES,
@@ -231,6 +232,15 @@ class BLEService:
     def _handle_announce(self, packet: BitchatPacket):
         ann = AnnouncementPacket.decode(packet.payload)
         if ann is None:
+            return
+        # Accept only what the official clients accept: the sender ID must be
+        # derived from the announced Noise key, and the packet must carry a
+        # valid Ed25519 signature from the announced signing key.
+        if peer_id_from_noise_public_key(ann.noise_public_key) != packet.sender_id:
+            return
+        if packet.signature is None or not verify_signature(
+            packet.signature, packet.data_for_signing(), ann.signing_public_key
+        ):
             return
         peer_id = packet.sender_id.hex()
         if self.state.set_peer(peer_id, ann.nickname):

@@ -76,6 +76,8 @@ It immediately starts scanning for nearby bitchat peers, connects to any in rang
 
 bitchat-cli uses [`bleak`](https://github.com/hbldh/bleak) as a BLE **central** that discovers, connects to, and exchanges packets with real bitchat peers in range. It implements bitchat's binary wire protocol — announce / leave / public-message / file-transfer packets, PKCS#7 padding, fragment reassembly, and Ed25519 packet signing — so it can take part in **public chat** with the official app.
 
+Like the official iOS and Android clients, the CLI's 8-byte wire peer ID is the first 8 bytes of SHA-256 over its Noise (X25519) public key. Both apps reject announces whose sender ID is not derived from the announced key, so this binding is required for two-way chat.
+
 > [!NOTE]
 > **Scope & limitations.** Only public/broadcast chat is supported. Private (Noise-encrypted) messaging, multi-hop mesh relaying, and advertising as a BLE **peripheral** are not implemented — `bleak` is central-only, so this client works one hop with peers it is connected to and is not itself discoverable when idle.
 

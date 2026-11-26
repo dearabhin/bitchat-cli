@@ -6,11 +6,12 @@
 #
 #   python selftest.py
 
+import hashlib
 import os
 
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from bitchat_cli.identity import IdentityKeys
+from bitchat_cli.identity import IdentityKeys, peer_id_from_noise_public_key
 from bitchat_cli.media import (
     BitchatFilePacket,
     MAX_PAYLOAD_BYTES,
@@ -110,6 +111,62 @@ def test_announce():
     check("nickname preserved", decoded.nickname == "user-abcd")
     check("noise key preserved (32B)", decoded.noise_public_key == keys.noise_public_key_bytes())
     check("signing key preserved (32B)", decoded.signing_public_key == keys.signing_public_key_bytes())
+
+
+def _official_clients_accept_announce(packet):
+    """Mirror the announce preflight in the iOS/Android apps.
+
+    Their validators decode the TLV, derive the peer ID from the announced
+    Noise public key, require it to equal packet.senderID, and verify the
+    packet signature with the announced Ed25519 signing key.
+    """
+    ann = AnnouncementPacket.decode(packet.payload)
+    if ann is None:
+        return False
+    derived = peer_id_from_noise_public_key(ann.noise_public_key)
+    if derived != packet.sender_id:
+        return False
+    if packet.signature is None:
+        return False
+    pub = ed25519.Ed25519PublicKey.from_public_bytes(ann.signing_public_key)
+    try:
+        # The apps reconstruct the canonical signing bytes from the decoded
+        # fields (ttl=0, signature removed, padded).
+        pub.verify(packet.signature, packet.data_for_signing())
+        return True
+    except Exception:
+        return False
+
+
+def test_peer_id_derivation():
+    keys = IdentityKeys()
+    expected = hashlib.sha256(keys.noise_public_key_bytes()).digest()[:8]
+    check("peer id = SHA-256(noise pubkey)[:8]", keys.peer_id_bytes() == expected)
+    check("peer id is 8 bytes", len(keys.peer_id_bytes()) == 8)
+
+    # A properly bound, signed announce is what the official apps accept.
+    ann = AnnouncementPacket(
+        nickname="user-test",
+        noise_public_key=keys.noise_public_key_bytes(),
+        signing_public_key=keys.signing_public_key_bytes(),
+    )
+    pkt = BitchatPacket(
+        type=MessageType.ANNOUNCE, sender_id=keys.peer_id_bytes(),
+        recipient_id=None, payload=ann.encode(), ttl=7,
+    )
+    pkt.signature = keys.sign(pkt.data_for_signing())
+    check("official preflight accepts a bound announce",
+          _official_clients_accept_announce(pkt))
+
+    # Regression: the CLI used to pick a random sender ID. Such an announce
+    # is well signed but silently dropped by the real app.
+    random_id_pkt = BitchatPacket(
+        type=MessageType.ANNOUNCE, sender_id=os.urandom(8),
+        recipient_id=None, payload=ann.encode(), ttl=7,
+    )
+    random_id_pkt.signature = keys.sign(random_id_pkt.data_for_signing())
+    check("official preflight rejects a random sender ID",
+          not _official_clients_accept_announce(random_id_pkt))
 
 
 def test_fragment_reassembly():
@@ -277,6 +334,7 @@ if __name__ == "__main__":
         test_packet_roundtrip,
         test_signature_matches_canonical,
         test_announce,
+        test_peer_id_derivation,
         test_fragment_reassembly,
         test_file_packet_roundtrip,
         test_file_packet_oversize_rejected,

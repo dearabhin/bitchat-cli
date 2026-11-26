@@ -1,5 +1,5 @@
 # chat_state.py
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from .identity import IdentityKeys
 from .protocol import BitchatMessage
@@ -8,10 +8,15 @@ from .protocol import BitchatMessage
 class ChatState:
     """In-memory application state shared between the CLI and the BLE service."""
 
-    def __init__(self, nickname: str, my_peer_id: bytes):
-        self.nickname = nickname
-        self.my_peer_id = my_peer_id              # 8 random bytes
+    def __init__(self, nickname: Optional[str] = None,
+                 my_peer_id: Optional[bytes] = None):
         self.identity = IdentityKeys()
+        # The real app derives a peer ID from the Noise public key and drops
+        # announces/messages whose senderID does not match it. Never use a
+        # random ID here; override only for tests.
+        self.my_peer_id = (my_peer_id if my_peer_id is not None
+                           else self.identity.peer_id_bytes())
+        self.nickname = nickname or f"user-{self.my_peer_id.hex()[:4]}"
         self.messages: List[BitchatMessage] = []
 
         # Peers are identified by their 8-byte peer ID (hex), learned from
