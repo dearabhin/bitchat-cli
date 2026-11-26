@@ -15,9 +15,14 @@ from .chat_state import ChatState
 class CLI:
     """Command-line interface and input loop."""
 
-    def __init__(self, state: ChatState):
+    def __init__(self, state: ChatState, ws_host: str = None,
+                 ws_port: int = 8787, ws_token: str = None):
         self.state = state
         self.ble_service = BLEService(state, self.redraw_prompt)
+        self.ws_host = ws_host
+        self.ws_port = ws_port
+        self.ws_token = ws_token
+        self.ws_server = None
         self.session = PromptSession(
             completer=WordCompleter(
                 ["/w", "/name", "/send", "/file", "/clear", "/help"], ignore_case=True
@@ -57,7 +62,7 @@ class CLI:
                 self._out(theme.warn("Usage: /name <new nickname>"))
             else:
                 old = self.state.nickname
-                self.state.nickname = new_nick
+                self.state.set_nickname(new_nick)
                 await self.ble_service.send_announce()
                 self._out(theme.system(f"Nickname changed from '{old}' to '{new_nick}'."))
         elif cmd in ("/send", "/file"):
@@ -87,14 +92,36 @@ class CLI:
             else:
                 self._out(theme.warn(f"Unknown command: {cmd}. Type /help for commands."))
 
+    async def _run_ws(self):
+        try:
+            await self.ws_server.start()
+            auth = "token required" if self.ws_token else "no token"
+            self._out(theme.system(
+                f"WebSocket control on ws://{self.ws_server.host}:"
+                f"{self.ws_server.port} ({auth})."
+            ))
+            await self.ws_server.wait_closed()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - keep the chat running
+            self._out(theme.error(f"WebSocket control server stopped: {e}"))
+
     async def run(self):
         print_formatted_text(ANSI(theme.banner(
             self.state.nickname, self.state.my_peer_id_hex, __version__)))
 
         ble_task = None
+        ws_task = None
         try:
             with patch_stdout():
                 ble_task = asyncio.create_task(self.ble_service.run())
+                if self.ws_host is not None:
+                    from .ws_server import WebSocketServer
+                    self.ws_server = WebSocketServer(
+                        self.state, self.ble_service, self.ws_host,
+                        self.ws_port, self.ws_token,
+                    )
+                    ws_task = asyncio.create_task(self._run_ws())
                 while True:
                     self.session.message = self.get_prompt_message
                     text = await self.session.prompt_async()
@@ -110,5 +137,9 @@ class CLI:
         finally:
             if ble_task:
                 ble_task.cancel()
+            if ws_task:
+                ws_task.cancel()
             await self.ble_service.stop()
+            if self.ws_server is not None:
+                await self.ws_server.stop()
             print(theme.system("Shutdown complete."))

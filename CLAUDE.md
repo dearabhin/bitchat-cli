@@ -14,8 +14,11 @@ The app lives in the `bitchat_cli/` package (installable; see `pyproject.toml`).
 
 ```bash
 pip install -e .                  # editable install of bleak, cryptography, prompt-toolkit
+pip install -e ".[ws]"            # ... plus websockets for the --ws control server
 bitchat-cli                       # (or `bitchat`, or `python -m bitchat_cli`) run the app; scans over BLE
+bitchat --ws --ws-token secret    # also serve the JSON WebSocket control API
 python selftest.py                # offline protocol round-trip + signature tests (no BLE needed)
+python ws_selftest.py             # offline WebSocket API tests (needs websockets)
 ```
 
 `selftest.py` is the only thing runnable without hardware; it imports the `bitchat_cli` package, so run it from the repo root. The app requires a working Bluetooth LE adapter — without one it starts, prints the logo, and reports that the scan could not start. `selftest.py` needs only `cryptography` (not `bleak`/`prompt-toolkit`), so it runs in CI/headless. Published to PyPI as `bitchat-cli`; version is single-sourced in `bitchat_cli/__init__.py`.
@@ -38,6 +41,7 @@ Single-process asyncio app. `main.py` → random 8-byte peer ID + `user-xxxx` ni
 - **`ble_service.py`** — all Bluetooth I/O via `bleak`, central role. Scans with a `detection_callback` and connects **only** to devices whose advertisement contains the bitchat `SERVICE_UUID` (with a per-device attempt cap + cooldown + permanent ignore-set). On connect: validate the characteristic, `start_notify`, and immediately `send_announce()`. Inbound notifications dispatch by `MessageType`; outbound `send_announce`/`send_public_message`/`send_leave`/`send_file` sign → encode → write to every connected client (fragmenting frames over `MAX_FRAME_SIZE`, with pacing between fragments). Received `FILE_TRANSFER` packets are decoded via `media.BitchatFilePacket`, saved to `~/.bitchat/downloads/` with a sanitized basename, and auto-opened with the OS default viewer.
 - **`chat_state.py`** — `ChatState`: holds `IdentityKeys`, chat history, peers keyed by **8-byte peer-ID hex → nickname** (from ANNOUNCE, NOT BLE MAC), and the set of connected BLE addresses. Shared by reference into `CLI` and `BLEService`.
 - **`cli.py`** — `prompt_toolkit` REPL. Owns the `BLEService` and passes it a `redraw_prompt` callback so the async BLE layer can print incoming messages without corrupting the input line (`patch_stdout()` in `run()`). `CLI.run()` launches `BLEService.run()` as a background task and loops on `prompt_async()` concurrently on the same event loop.
+- **`ws_server.py`** — optional JSON WebSocket control API (`--ws`, extra `websockets>=12`). Subscribes to `ChatState` events via `add_listener()` and fans them out to clients; commands call the same `BLEService` send methods the REPL uses. Loopback bind by default; a non-loopback bind requires `--ws-token`, and clients must `auth` first. `BLEService._broadcast()` holds a send lock so terminal and WebSocket senders cannot interleave fragment trains.
 
 ## Constraints / gotchas
 
